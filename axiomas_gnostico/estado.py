@@ -31,6 +31,8 @@ class Estado:
         self.costo_heredado: int = 0
         self._snapshots: list[Snapshot] = []
         self.contaminados: list[dict] = []
+        self.postulados: list[Any] = []  # Hecho de sesión; NUNCA son evidencia verificada
+        self.postulados_textos: list[str] = []
 
     def guardar(self, etiqueta: str = "") -> Snapshot:
         """Congela un estado ya validado internamente."""
@@ -100,3 +102,19 @@ class Estado:
         if clave in self.cuarentena:
             raise ValueError(f"clave en cuarentena: {clave}")
         self.memoria[clave] = valor
+
+    def registrar_postulados(self, hechos: list[Any]) -> None:
+        """Acumula postulados de la sesión. Un postulado de documento no es un hecho verificado."""
+        if not hechos:
+            return
+        self.postulados.extend(hechos)
+        if len(self.postulados) > 500:
+            self.postulados = self.postulados[-500:]
+
+    def registrar_textos_sesion(self, textos: list[str]) -> None:
+        for t in textos or []:
+            t = (t or "").strip()
+            if t:
+                self.postulados_textos.append(t)
+        if len(self.postulados_textos) > 500:
+            self.postulados_textos = self.postulados_textos[-500:]
