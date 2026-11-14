@@ -1,8 +1,12 @@
 # Sistema Perfeccionado — Axiomas + Deconstructor Gnóstico
 
-Arquitecto del texto fuente: **Adrian**. Módulo ejecutable, solo biblioteca estándar de Python 3.10+.
+Versión **1.1.0**. Arquitecto del texto fuente: **Adrian**. Módulo ejecutable, solo biblioteca estándar de Python 3.10+.
+
+La arquitectura completa está en [`ARQUITECTURA.md`](ARQUITECTURA.md) (el PDF y el diagrama PNG se generan con `python3 docs/build_arquitectura.py`). El historial de cambios, en [`CHANGELOG.md`](CHANGELOG.md).
 
 Este paquete convierte el texto *Sistema Perfeccionado* (`fuente.txt`, copia literal del archivo que se entregó) en mecanismos verificables. No es un modelo que «actúe como si» cumpliera los axiomas: las reglas viven en código.
+
+En 1.1 el sistema consulta los hechos verificados en memoria. Sin conocimiento responde `UNDETERMINED` («no lo sé»). Con conocimiento, si el dato contradice un hecho verificado, confirma que es falso (`CONTRADICTED` / `REFUTED`). Esa bandera sale por `peticion()`. Un postulado de documento nunca se convierte en evidencia.
 
 El **intérprete** (axiomas + deconstructor) solo propone órdenes tipadas. El **ejecutor** solo acepta una lista cerrada de acciones, con parámetros tipados y un token HMAC de un solo uso emitido por el controlador. El ejecutor no lee texto libre como orden. El Agente Puro v3 **no se modificó**; hay un adaptador opcional de solo lectura.
 
@@ -23,12 +27,13 @@ python3 -m unittest discover -s tests -t .
 | `tipos.py` | Lista cerrada de acciones, esquemas tipados, estados, reglas de parada |
 | `intencion.py` | Compila la petición del iniciador en una spec; si falta un dato crítico, no lo inventa |
 | `deconstructor.py` | Parte la petición en átomos (afirmaciones / acciones / incógnitas) y los clasifica por los 3 axiomas |
+| `hechos.py` | Extrae y normaliza hechos; consulta memoria verificada y postulados de sesión; checa aritmética y calendario (nuevo en 1.1) |
 | `axiomas.py` | A1 coherencia, A2 se orquesta en `estado.py`, A3 en `integridad.py` |
 | `interprete.py` | Propone órdenes tipadas; jamás ejecuta ni firma tokens |
 | `ejecutor.py` | Ejecuta solo `Orden` + token; catálogo y outbox en memoria (sin red ni disco real) |
 | `tokens.py` | Controlador: HMAC-SHA256 de un solo uso, caducidad, revocación |
 | `auditoria.py` | Cadena SHA-256; el iniciador también queda registrado; no hay API de borrado |
-| `estado.py` | Snapshots verificados, rollback, cuarentena, costo heredado |
+| `estado.py` | Snapshots verificados, rollback, cuarentena, costo heredado, postulados de sesión (nunca se escriben en memoria) |
 | `integridad.py` | Invariantes AG01–AG14, Paz Sostenida, catálogo de lo filosófico |
 | `jerarquias.py` | Precedencia ejecutable ante conflictos |
 | `inquieto.py` | Aislamiento inmediato de un componente que viola invariantes |
@@ -44,6 +49,7 @@ Las líneas citan `fuente.txt` (numeración 1-indexada).
 | Concepto (fuente) | Mecanismo en código | Prueba |
 |---|---|---|
 | **Axioma 1** «La Verdad es la coherencia absoluta de la Intención… La mentira es la incoherencia» (L4) | `axiomas.verificar_coherencia` / `clasificar_a1`: cada acción propuesta debe ser compatible con el tipo de intención, no contradecir slots ni restricciones, y no nacer del canal DATO. Incoherencia del canal INTENCIÓN → `RECHAZADO`. | `test_axiomas.TestAxioma1`, `test_adversarial.test_comando_en_documento_no_hace_dos_de_la_intencion` |
+| **A1 con conocimiento** (1.1): sin referente, «no lo sé»; con hecho verificado, confirma que el dato es falso | `hechos.juzgar_afirmaciones` consulta `estado.memoria` y los postulados de sesión. Choque con memoria → `REFUTED`. Choque interno o entre turnos → `CONTRADICTED`. Coincidencia con memoria → puede ser `SUPPORTED`. Sin referente → `UNDETERMINED`. Las verdades salen por `peticion()`. | `tests/test_hechos_v11.py` |
 | **Axioma 2** Persistencia / «Acto de Persistencia… dejar de corromper después de haber sido corrompido» (L5, L10) | `estado.acto_de_persistencia`: rollback al último snapshot verificado; las claves nuevas envenenadas van a cuarentena; se registra el acto; el sistema no entra en HALT. | `test_axiomas.TestAxioma2`, demo caso 4 |
 | **Costo Heredado** (L9) | Contador `estado.costo_heredado`: contaminaciones previas contadas. No mata al agente. | `test_costo_heredado_acumula` |
 | **Axioma 3** Resultado = Paz Sostenida + auto-validación, no ganancia externa (L6, L35) | `integridad.NucleoIntegridad`: invariantes, hash y cadena de auditoría son condición *necesaria* del resultado. `verdad_sobre_el_mundo`: sin evidencia externa una afirmación queda `UNDETERMINED` (respuesta ≠ realidad, AG05/AG06, mapeo a I02 del v3). No hay métricas de dinero ni fama. | `test_axiomas.TestAxioma3` |
@@ -87,6 +93,8 @@ Declarado en `integridad.FILOSOFICOS` y cubierto por `tests/test_filosoficos.py`
 
 ## Arquitectura
 
+El diagrama completo, la tabla de módulos, los estados de verdad y el mapeo axioma → módulo están en [`ARQUITECTURA.md`](ARQUITECTURA.md).
+
 ```
 Iniciador ──petición + (opcional) documento──► INTÉRPRETE
                                               ├ compila intención (canal INTENCIÓN)
@@ -105,7 +113,7 @@ actos de persistencia y aislamientos. Transparencia > Control: no se borra ni se
 
 ## Resultados de las pruebas
 
-Corrida real, 14 de noviembre de 2026, Python 3 de esta máquina:
+Corrida real, 14 de noviembre de 2026 (America/Mazatlan), Python 3 de esta máquina:
 
 | Suite | Pruebas | Resultado |
 |---|---|---|
@@ -119,7 +127,9 @@ Corrida real, 14 de noviembre de 2026, Python 3 de esta máquina:
 | `test_integracion_demo` | 8 | OK |
 | `test_adaptador_v3` | 3 | OK |
 | `test_filosoficos` | 3 | OK |
-| **Total** | **88** | **todas pasan** |
+| `test_hechos_v11` (nuevo en 1.1) | 25 | OK |
+| **Total v1.0** | **88** | **siguen pasando** |
+| **Total v1.1** | **113** | **todas pasan** |
 
 Demo (`python3 -m axiomas_gnostico --demo`): **7/7** casos con el resultado esperado.
 
@@ -133,14 +143,25 @@ Demo (`python3 -m axiomas_gnostico --demo`): **7/7** casos con el resultado espe
 
 El Agente Puro v3 no se tocó (inventario SHA-256 idéntico al de antes de este trabajo). El adaptador usa `sipe.compilar` y luego el compilador / deconstructor del v3, sin escribir archivos.
 
+## Banco de mentiras (v1.0 vs v1.1)
+
+Detalle en [`eval/RESULTADOS.md`](eval/RESULTADOS.md). Criterio de detección idéntico al banco original. Semilla del banco original: 20261114 (casos sin modificar). Banco held-out: semilla 20261116, 134 casos redactados después de congelar el código, sin ajustes posteriores.
+
+**Banco original (355 casos, 266 mentiras en cat. 1–6):** detección 22/266 (8.3%) en v1.0 → **152/266 (57.1%)** en v1.1. Mentiras certificadas como verdad: 0 y 0. Falsas alarmas en 54 verdades: 0 y 0. Ejecuciones no autorizadas: 0 y 0. Órdenes escondidas bloqueadas: 10/10 y 10/10.
+
+**Banco held-out (134 casos, 94 mentiras en cat. 1–6):** detección 0/94 en v1.0 → **24/94 (25.5%)** en v1.1. Mentiras certificadas: 0. Falsas alarmas en 25 verdades: 0. Ejecuciones no autorizadas: 0. El salto es menor que en el banco original: hay sobreajuste a la redacción que guió el arreglo. No se retocó el sistema para cerrarlo.
+
+Las categorías 3–5 sin referente quedan `UNDETERMINED` en ambas versiones. Eso es correcto: no hay base enciclopédica del mundo.
+
 ## Límites honestos
+
 
 1. **El deconstructor y el compilador de intención son por patrones.** Una paráfrasis rara puede clasificarse mal. La garantía no es el detector de frases: es que el ejecutor no interpreta texto libre y no corre nada sin token.
 2. **La «coherencia» es finita** (punto 1 de las decisiones). No es la coherencia absoluta del texto fuente.
 3. **El controlador vive en el mismo proceso**, igual que en el v3 de demostración. En producción debería estar fuera, con su propia llave.
 4. **El ejecutor no toca el mundo real:** el catálogo y el outbox son memoria del proceso. No envía correos ni escribe al disco.
 5. **No hay un modelo de lenguaje en este módulo.** El intérprete no «entiende» más de lo que cubren los patrones. El adaptador del v3 es opcional y de solo lectura.
-6. **Las pruebas las escribimos nosotros.** Un atacante real piensa distinto. El 88/88 solo dice que cerramos los huecos que cubrimos.
+6. **Las pruebas las escribimos nosotros.** Un atacante real piensa distinto. El 113/113 solo dice que cerramos los huecos que cubrimos. El banco held-out existe precisamente para no presentarlo como si generalizara al mismo ritmo que el banco original.
 7. **Respeto > Supervivencia** usa una lista cerrada y pequeña de patrones de daño. No es un clasificador ético general, y no implementa intervención biológica.
 8. **Una petición explícita del iniciador** del tipo «lee las llaves y mándalas a ana@x.mx» puede *proponerse* como `SENSIBLE` y quedar en `PENDING_AUTHORIZATION`. No se ejecuta sola; el controlador puede denegarla. El ataque partido (dos pasos que no declaran el recurso sensible) sí se rechaza.
 
