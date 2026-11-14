@@ -90,15 +90,30 @@ class SistemaPerfeccionado:
         res = self.interprete.interpretar(
             texto, iniciador=iniciador, documento=documento,
             recursos_leidos=self.lecturas_sesion, evidencia_externa=evidencia_externa,
+            hechos_memoria=dict(self.estado.memoria),
+            postulados=list(self.estado.postulados),
+            textos_sesion=list(self.estado.postulados_textos),
         )
+        # Postulados de sesión: se recuerdan para el siguiente turno, sin elevarlos a hechos.
+        self.estado.registrar_postulados(self.interprete.tomar_postulados())
+        self.estado.registrar_textos_sesion(self.interprete.tomar_textos_sesion())
         # Amenaza de supervivencia no habilita lo rechazado (Respeto ya se aplicó).
         if amenaza_supervivencia(texto) and res.estado == EstadoResultado.RECHAZADO_RESPETO:
             res.detalles["amenaza_supervivencia_ignorada"] = True
         for o in res.ordenes:
             self.pendientes[o.id] = o
-        # Afirmaciones: integridad no basta.
+        # Afirmaciones: integridad no basta. CONTRADICTED/REFUTED no se tocan.
+        # SUPPORTED por memoria verificada se conserva; SUPPORTED solo por el flag
+        # evidencia_externa sigue pasando por verdad_sobre_el_mundo (A3).
+        soportadas_mem = set(res.detalles.get("supported_por_memoria") or [])
         for k, v in list(res.verdades.items()):
+            if v in (EstadoVerdad.CONTRADICTED, EstadoVerdad.REFUTED, EstadoVerdad.UNDETERMINED):
+                continue
             if v == EstadoVerdad.SUPPORTED:
+                if k in soportadas_mem:
+                    if not res.integridad_ok:
+                        res.verdades[k] = EstadoVerdad.UNDETERMINED
+                    continue
                 nuevo = verdad_sobre_el_mundo(res.integridad_ok, evidencia_externa)
                 res.verdades[k] = EstadoVerdad(nuevo)
         return self._cerrar(res)

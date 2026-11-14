@@ -5,11 +5,12 @@ pide NEED_INPUT en vez de inventarlo.
 """
 from __future__ import annotations
 
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 from .auditoria import Auditoria, sha256
 from .axiomas import InformeA1, verificar_coherencia
 from .deconstructor import INYECCION, deconstruir
+from .hechos import InformeHechos, juzgar_afirmaciones
 from .intencion import compilar_intencion
 from .jerarquias import sensibilidad_envio, viola_respeto
 from .tipos import (
@@ -25,11 +26,51 @@ def _hash_orden(o: Orden) -> str:
     })
 
 
+
+def _verdades_de(atomos, juicio: InformeHechos, evidencia_externa: bool) -> dict:
+    verdades = {}
+    for a in atomos:
+        if a.tipo != TipoAtomo.AFIRMACION:
+            continue
+        if a.id in juicio.verdades:
+            verdades[a.id] = juicio.verdades[a.id]
+        elif evidencia_externa:
+            verdades[a.id] = EstadoVerdad.SUPPORTED
+        else:
+            verdades[a.id] = EstadoVerdad.UNDETERMINED
+    return verdades
+
+
+def _con_verdades(res: Resultado, atomos, juicio: InformeHechos, evidencia_externa: bool) -> Resultado:
+    res.verdades = _verdades_de(atomos, juicio, evidencia_externa)
+    res.detalles = dict(res.detalles or {})
+    res.detalles["motivos"] = list((res.detalles.get("motivos") or [])) 
+    # asegurar que los motivos de hechos queden visibles
+    for m in juicio.motivos:
+        if m not in res.detalles["motivos"]:
+            res.detalles["motivos"].append(m)
+    if juicio.supported_por_memoria:
+        res.detalles["supported_por_memoria"] = list(juicio.supported_por_memoria)
+    return res
+
+
 class Interprete:
     def __init__(self, auditoria: Auditoria):
         self.audit = auditoria
         # El intérprete no recibe ni guarda un secreto de firma.
         self.secreto_firma = None
+        self.ultimos_postulados: list[Any] = []
+        self.ultimos_textos: list[str] = []
+
+    def tomar_postulados(self) -> list[Any]:
+        hs = list(self.ultimos_postulados)
+        self.ultimos_postulados = []
+        return hs
+
+    def tomar_textos_sesion(self) -> list[str]:
+        ts = list(self.ultimos_textos)
+        self.ultimos_textos = []
+        return ts
 
     def interpretar(
         self,
@@ -38,6 +79,9 @@ class Interprete:
         documento: Optional[str] = None,
         recursos_leidos: Iterable[str] = (),
         evidencia_externa: bool = False,
+        hechos_memoria: Optional[dict] = None,
+        postulados: Optional[list] = None,
+        textos_sesion: Optional[list[str]] = None,
     ) -> Resultado:
         self.audit.registrar("PETICION", f"INICIADOR:{iniciador}", {
             "texto": (texto or "")[:1000],
@@ -54,6 +98,28 @@ class Interprete:
                 })
 
         informe: InformeA1 = verificar_coherencia(intencion, atomos)
+        juicio: InformeHechos = juzgar_afirmaciones(
+            atomos,
+            memoria=hechos_memoria or {},
+            postulados=list(postulados or []),
+            texto_documento=documento,
+            textos_sesion=list(textos_sesion or []),
+        )
+        self.ultimos_postulados = list(juicio.postulados_nuevos)
+        from .tipos import TipoAtomo as _TA
+        self.ultimos_textos = [a.texto for a in atomos if a.tipo == _TA.AFIRMACION and a.texto]
+        if documento:
+            self.ultimos_textos.append(documento)
+        if juicio.motivos:
+            for m in juicio.motivos:
+                if m not in informe.motivos:
+                    informe.motivos.append(m)
+        if juicio.atomos_incoherentes:
+            informe.atomos_incoherentes = sorted(set(informe.atomos_incoherentes) | set(juicio.atomos_incoherentes))
+            # Una contradicción factual es mentira del Axioma 1 (coherencia).
+            informe.mentira = True
+            informe.mentira_en_intencion = True
+            informe.coherente = False
         dano = viola_respeto(texto + "\n" + (documento or ""), [])
         # Acciones coherentes → órdenes tipadas.
         ordenes: list[Orden] = []
@@ -114,47 +180,47 @@ class Interprete:
 
         if dano:
             self.audit.registrar("RECHAZO_RESPETO", "INTERPRETE", {"motivo": dano})
-            return Resultado(
+            return _con_verdades(Resultado(
                 estado=EstadoResultado.RECHAZADO_RESPETO,
                 intencion=intencion, atomos=atomos, ordenes=[],
                 mensaje=f"Rechazado por jerarquía Respeto > Supervivencia: {dano}",
                 regla_parada="RESPETO_BLOQUEA",
                 integridad_ok=True,  # el rechazo es el comportamiento íntegro
                 detalles={"motivo": dano},
-            )
+            ), atomos, juicio, evidencia_externa)
 
         if informe.mentira_en_intencion:
             self.audit.registrar("RECHAZO", "INTERPRETE", {
                 "motivos": informe.motivos, "atomos": informe.atomos_incoherentes,
             })
-            return Resultado(
+            return _con_verdades(Resultado(
                 estado=EstadoResultado.RECHAZADO,
                 intencion=intencion, atomos=atomos, ordenes=[],
                 mensaje="Rechazado: incoherencia con la intención (Axioma 1: la mentira es la incoherencia).",
                 integridad_ok=True,
                 detalles={"motivos": informe.motivos, "atomos_incoherentes": informe.atomos_incoherentes},
-            )
+            ), atomos, juicio, evidencia_externa)
 
         if intencion.faltantes or any(a.a1 == VeredictoA1.PENDIENTE_DATOS for a in atomos):
             faltan = list(intencion.faltantes)
             self.audit.registrar("NEED_INPUT", "INTERPRETE", {"faltantes": faltan})
-            return Resultado(
+            return _con_verdades(Resultado(
                 estado=EstadoResultado.NEED_INPUT,
                 intencion=intencion, atomos=atomos, ordenes=[],
                 mensaje="Falta un dato crítico; no se inventa. Indica: " + ", ".join(faltan or ["dato crítico"]),
                 integridad_ok=True,
                 detalles={"faltantes": faltan},
-            )
+            ), atomos, juicio, evidencia_externa)
 
         if not ordenes:
             # Nada que proponer de forma tipada.
             if intencion.tipo not in {TipoTarea.ANALISIS, TipoTarea.CONSULTA, TipoTarea.CALCULO}:
-                return Resultado(
+                return _con_verdades(Resultado(
                     estado=EstadoResultado.NEED_INPUT,
                     intencion=intencion, atomos=atomos,
                     mensaje="No pude convertir la petición en una orden de la lista cerrada. Reformúlala.",
                     integridad_ok=True,
-                )
+                ), atomos, juicio, evidencia_externa)
             # Consulta/análisis/cálculo sin acción extraída: proponemos REPORTAR (y CALCULAR si hay expresión, ya cubierto arriba).
             o = Orden(
                 id="ord-reportar", accion=Accion.REPORTAR,
@@ -167,19 +233,12 @@ class Interprete:
         self.audit.registrar("PROPUESTA", "INTERPRETE", {
             "ordenes": [o.a_dict() for o in ordenes],
         })
-        # A3: afirmaciones del mundo quedan UNDETERMINED sin evidencia externa.
-        verdades = {}
-        for a in atomos:
-            if a.tipo == TipoAtomo.AFIRMACION:
-                verdades[a.id] = (
-                    EstadoVerdad.SUPPORTED if evidencia_externa else EstadoVerdad.UNDETERMINED
-                )
-
-        return Resultado(
+        # A3: afirmaciones del mundo quedan UNDETERMINED sin evidencia externa
+        # o SUPPORT/CONTRADICTED/REFUTED según memoria y contraste (v1.1).
+        return _con_verdades(Resultado(
             estado=EstadoResultado.PENDING_AUTHORIZATION,
             intencion=intencion, atomos=atomos, ordenes=ordenes,
             mensaje="Propuesta lista. El ejecutor no correrá nada sin un token del controlador.",
-            verdades=verdades,
             integridad_ok=True,
             detalles={"evidencia_externa": evidencia_externa},
-        )
+        ), atomos, juicio, evidencia_externa)
